@@ -1,135 +1,93 @@
 import numpy as np
-import math
 import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
 
-N = 7
-f = 420e6
-c = 299_792_458.0
-lam = c / f
-d = 0.25 * lam
-k = 2*np.pi / lam
-beta = -k*d
+lam = 0.026
+ap = 0.11
+bp = 0.11
 
-use_dipole_element = True
+C = np.pi * ap / lam
+D = 2 * ap / lam
+Ce, Ch = C, C
+De, Dh = D, D
 
-def sinc_safe(x):
+deg = np.linspace(0.0, 90.0, 9001)
+th  = np.deg2rad(deg)
+
+def Fce(theta):
+    x = Ce * np.sin(theta)
     out = np.ones_like(x)
-    nz = np.abs(x) > 1e-15
+    nz = x != 0
     out[nz] = np.sin(x[nz]) / x[nz]
-    return out
+    return np.abs(out)
 
-def array_factor(theta):
-    psi = k*d*np.cos(theta) + beta
-    return np.sin(N*psi/2.0) / (N * np.sin(psi/2.0) + 1e-15)
+def F1e(theta):
+    return (1 + np.cos(theta)) / 2
 
-def dipole_elem_factor(theta):
-    x = (np.pi/2.0)*np.cos(theta)
-    num = np.cos(x)
-    den = np.sin(theta) + 1e-15
-    return np.abs(num/den)
+def Fch(theta):
+    x = Ch * np.sin(theta)
+    denom = 1 - (Dh * np.sin(theta))**2
+    return np.abs(np.cos(x) / denom)
 
-def pattern(theta):
-    AF = np.abs(array_factor(theta))
-    Fe = dipole_elem_factor(theta) if use_dipole_element else 1.0
-    P = AF * Fe
-    return P / np.max(P)
+def F1h(theta):
+    return (1 + np.cos(theta)) / 2
 
-def to_dB(x):
-    x = np.maximum(x, 1e-12)
-    return 20*np.log10(x)
+Fe = Fce(th) * F1e(th)
+Fh = Fch(th) * F1h(th)
 
-def half_power_bw_deg(angles_deg, pat):
-    peak_i = np.argmax(pat)
-    peak = pat[peak_i]
-    target = 0.707*peak
+Fe /= Fe.max()
+Fh /= Fh.max()
 
-    i_left = peak_i
-    while i_left > 0 and pat[i_left] > target:
-        i_left -= 1
-    x1, y1 = angles_deg[i_left], pat[i_left]
-    x2, y2 = angles_deg[i_left+1], pat[i_left+1]
-    if y2 != y1:
-        left_deg = x1 + (target - y1) * (x2 - x1) / (y2 - y1)
-    else:
-        left_deg = angles_deg[i_left]
+def hpbw(theta, F):
+    lvl = 0.707
+    sgn = np.sign(F - lvl)
+    cross = np.where(np.diff(sgn) != 0)[0]
+    if len(cross) >= 2:
+        t1, t2 = theta[cross[0]], theta[cross[1]]
+        return np.rad2deg(t2 - t1), np.rad2deg(t1), np.rad2deg(t2)
+    return np.nan, np.nan, np.nan
 
-    i_right = peak_i
-    while i_right < len(pat)-1 and pat[i_right] > target:
-        i_right += 1
-    x1, y1 = angles_deg[i_right-1], pat[i_right-1]
-    x2, y2 = angles_deg[i_right],   pat[i_right]
-    if y2 != y1:
-        right_deg = x1 + (target - y1) * (x2 - x1) / (y2 - y1)
-    else:
-        right_deg = angles_deg[i_right]
+HP_E, t1E, t2E = hpbw(th, Fe)
+HP_H, t1H, t2H = hpbw(th, Fh)
 
-    return (right_deg - left_deg), left_deg, right_deg
+def sidelobes(theta_deg, F, right_of_deg):
+    mask = theta_deg > right_of_deg
+    idx, _ = find_peaks(F[mask])
+    th_pe = theta_deg[mask][idx]
+    val_pe = F[mask][idx]
+    if len(val_pe) == 0:
+        return None
+    return th_pe[0], 20*np.log10(val_pe[0] + 1e-12)
 
-def first_sidelobe_level_dB(pat_dB):
-    p = pat_dB.copy()
-    i0 = np.argmax(p)
-    width = 50
-    l = max(0, i0 - width)
-    r = min(len(p), i0 + width)
-    p[l:r] = -1e9
-    idx = np.argmax(p)
-    return float(p[idx])
+slE = sidelobes(deg, Fe, t2E if np.isfinite(t2E) else 0)
+slH = sidelobes(deg, Fh, t2H if np.isfinite(t2H) else 0)
 
-angles_deg = np.linspace(0, 90, 40001)
-theta = np.deg2rad(angles_deg)
+plt.figure(figsize=(7.2, 4.2))
+plt.plot(deg, Fh, label="H-площина (3.41)")
+plt.plot(deg, Fe, '--', label="E-площина (3.42)")
+plt.axhline(0.707, color='gray', ls='--', lw=0.8)
+for t in [t1H, t2H]:
+    if np.isfinite(t): plt.axvline(t, color='C0', ls=':', lw=0.8)
+for t in [t1E, t2E]:
+    if np.isfinite(t): plt.axvline(t, color='C1', ls=':', lw=0.8)
+plt.title("Нормовані ДС пірамідального рупора (лінійний масштаб)")
+plt.xlabel("θ, град"); plt.ylabel("Амплітуда (норма на максимум)")
+plt.xlim(0, 90); plt.ylim(0, 1.05); plt.grid(ls='--', alpha=0.3); plt.legend()
 
-P_E = pattern(theta)
-P_H = pattern(theta)
+plt.figure(figsize=(7.2, 4.2))
+plt.plot(deg, 20*np.log10(Fh+1e-12), label="H-площина (3.41)")
+plt.plot(deg, 20*np.log10(Fe+1e-12), '--', label="E-площина (3.42)")
+if slH: plt.scatter([slH[0]], [slH[1]], c='C0', s=25, label=f"1-ша бічна H: {slH[1]:.1f} дБ")
+if slE: plt.scatter([slE[0]], [slE[1]], c='C1', s=25, label=f"1-ша бічна E: {slE[1]:.1f} дБ")
+plt.title("Нормовані ДС пірамідального рупора (дБ)")
+plt.xlabel("θ, град"); plt.ylabel("Рівень, дБ (норма на максимум)")
+plt.xlim(0, 90); plt.ylim(-60, 0); plt.grid(ls='--', alpha=0.3); plt.legend()
 
-bwE, lE, rE = half_power_bw_deg(angles_deg, P_E)
-bwH, lH, rH = half_power_bw_deg(angles_deg, P_H)
-
-P_E_dB = to_dB(P_E)
-P_H_dB = to_dB(P_H)
-sllE = first_sidelobe_level_dB(P_E_dB)
-sllH = first_sidelobe_level_dB(P_H_dB)
-
-print(f"λ = {lam:.4f} м,  d = {d:.4f} м ({d/lam:.3f} λ),  k = {k:.4f} рад/м")
-print(f"N = {N}, β = {beta:.4f} рад (ендфаєр)")
-
-print("\nШирина головної пелюстки (на рівні 0.707, тобто −3 dB):")
-print(f"  E-площина: {bwE:.2f}°  (ліва межа {lE:.2f}°, права {rE:.2f}°)")
-print(f"  H-площина: {bwH:.2f}°  (ліва межа {lH:.2f}°, права {rH:.2f}°)")
-
-print("\nРівень найбільшої бічної пелюстки (SLL, dB):")
-print(f"  E-площина: {sllE:.2f} dB")
-print(f"  H-площина: {sllH:.2f} dB")
-
-
-plt.figure(figsize=(9,5))
-plt.plot(angles_deg, P_H, label="H-площина")
-plt.plot(angles_deg, P_E, "--", label="E-площина")
-plt.axhline(0.707, lw=0.8, color="gray")
-plt.axvline(lE, lw=0.6, color="gray", ls="--")
-plt.axvline(rE, lw=0.6, color="gray", ls="--")
-plt.title("Нормовані ДС директорної антени (лінійний масштаб)")
-plt.xlabel("θ, град")
-plt.ylabel("Амплітуда (норма на максимум)")
-plt.xlim(0, 90)
-plt.ylim(0, 1.05)
-plt.grid(True, ls="--", alpha=0.4)
-plt.legend()
-plt.tight_layout()
-plt.savefig("patterns_linear.png", dpi=300)
-
-# В dB
-plt.figure(figsize=(9,5))
-plt.plot(angles_deg, P_H_dB, label="H-площина")
-plt.plot(angles_deg, P_E_dB, "--", label="E-площина")
-plt.axhline(-3, lw=0.8, color="gray")
-plt.title("Нормовані ДС директорної антени (dB)")
-plt.xlabel("θ, град")
-plt.ylabel("Рівень, dB (норма на максимум)")
-plt.xlim(0, 90)
-plt.ylim(-50, 0)
-plt.grid(True, ls="--", alpha=0.4)
-plt.legend()
-plt.tight_layout()
-plt.savefig("patterns_dB.png", dpi=300)
+print(f"λ = {lam:.3f} м, a_p = {ap:.3f} м, b_p = {bp:.3f} м")
+print(f"Константи: πa_p/λ = πb_p/λ = {C:.4f},  2a_p/λ = 2b_p/λ = {D:.4f}")
+print(f"HPBW_E ≈ {HP_E:.2f}°  (межі {t1E:.2f}° .. {t2E:.2f}°)")
+print(f"HPBW_H ≈ {HP_H:.2f}°  (межі {t1H:.2f}° .. {t2H:.2f}°)")
+if slE: print(f"Найближча бічна пелюстка (E): {slE[1]:.2f} дБ @ θ≈{slE[0]:.2f}°")
+if slH: print(f"Найближча бічна пелюстка (H): {slH[1]:.2f} дБ @ θ≈{slH[0]:.2f}°")
 
 plt.show()
